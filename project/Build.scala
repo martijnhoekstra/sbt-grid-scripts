@@ -22,7 +22,7 @@ object StartScriptBuild extends Build {
             ScalariformKeys.preferences in Compile := formatPrefs,
             ScalariformKeys.preferences in Test    := formatPrefs) ++
         Seq(sbtPlugin := true,
-            organization := "com.typesafe.sbt",
+            organization := "heartym",
             name := "sbt-start-script",
             scalacOptions := Seq("-unchecked", "-deprecation"),
 
@@ -35,7 +35,7 @@ object StartScriptBuild extends Build {
             // Versions and git tags should follow: http://semver.org/
             // except using -SNAPSHOT instead of without hyphen.
 
-            version := "0.10.0-SNAPSHOT",
+            version := "0.0.1-SNAPSHOT",
             libraryDependencies <++= sbtVersion {
 		(version) =>
 		    Seq("org.scala-sbt" % "io" % version % "provided",

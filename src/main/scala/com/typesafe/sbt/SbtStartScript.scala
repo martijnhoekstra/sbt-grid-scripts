@@ -1,4 +1,4 @@
-package com.typesafe.sbt
+package heartym
 
 import _root_.sbt._
 
@@ -32,8 +32,11 @@ object SbtStartScript extends Plugin {
         val startScriptBaseDirectory = SettingKey[File]("start-script-base-directory", "All start scripts must be run from this directory.")
         val startScriptForWar = TaskKey[File]("start-script-for-war", "Generate a shell script to launch the war file")
         val startScriptForJar = TaskKey[File]("start-script-for-jar", "Generate a shell script to launch the jar file")
+        val startScriptForGridJar = TaskKey[File]("start-script-for-grid-jar", "Generate a shell script to launch the jar file with suitable java options for OGE")
+        val startScriptForGridJob = TaskKey[File]("start-script-for-grid", "Generate a shell script to launch the jar file launcher with suitable java and qsub options for OGE")
         val startScriptForClasses = TaskKey[File]("start-script-for-classes", "Generate a shell script to launch from classes directory")
         val startScriptNotDefined = TaskKey[File]("start-script-not-defined", "Generate a shell script that just complains that the project is not launchable")
+        val startScriptForGridEngine = TaskKey[File]("start-script-for-grid-engine", "Yo dawg, I heard you liked wrappers. So I'll generate a wrapper for your wrapper so you can launch while you launch")
         val startScript = TaskKey[File]("start-script", "Generate a shell script that runs the application")
 
         // jetty-related settings keys
@@ -42,6 +45,12 @@ object SbtStartScript extends Plugin {
         val startScriptJettyURL = SettingKey[String]("start-script-jetty-url", "URL of the Jetty distribution to download (if set, then it overrides the start-script-jetty-version)")
         val startScriptJettyContextPath = SettingKey[String]("start-script-jetty-context-path", "Context path for the war file when deployed to Jetty")
         val startScriptJettyHome = TaskKey[File]("start-script-jetty-home", "Download Jetty distribution and return JETTY_HOME")
+
+        // grid engine-related setting keys
+        val startScriptJavaOpts = SettingKey[Seq[String]]("start-script-java-opts", "Java options for launching the .jar on the grid")
+        val startScriptGridFile = SettingKey[File]("start-script-grid-name")
+        val startScriptGridOptsStrings = SettingKey[Seq[String]]("start-stcript-grid-opts-string", "Grid engine options for launching the .jar on the grid")
+
     }
 
     import StartScriptKeys._
@@ -84,6 +93,24 @@ object SbtStartScript extends Plugin {
     val startScriptForJarSettings: Seq[Project.Setting[_]] = Seq(
         startScriptForJar in Compile <<= (streams, startScriptBaseDirectory, startScriptFile in Compile, packageBin in Compile, relativeDependencyClasspathString in Compile, mainClass in Compile) map startScriptForJarTask,
         startScript in Compile <<= startScriptForJar in Compile) ++ genericStartScriptSettings
+
+    // settings to be added to a project with an exported jar for grid engine launch
+    val startScriptForGridJarSettings: Seq[Project.Setting[_]] = Seq(
+        startScriptJavaOpts := Seq("-jamvm", "-Xmx500m"),
+        startScriptGridFile <<= (target) { (target) => target / (scriptname + ".launcher") },
+        startScriptForGridJar in Compile <<= (streams, startScriptBaseDirectory, startScriptFile in Compile,
+            packageBin in Compile, relativeDependencyClasspathString in Compile,
+            mainClass in Compile, startScriptJavaOpts) map startScriptForGirdJarTask,
+        startScript in Compile <<= startScriptForGridJar in Compile) ++ genericStartScriptSettings
+
+    val startScriptForGridJobSettings: Seq[Project.Setting[_]] = Seq(
+        startScriptJavaOpts := Seq("-jamvm", "-Xmx500m"),
+        startScriptGridFile <<= (target) { (target) => target / (scriptname + ".launcher") },
+        startScriptForGridJar in Compile <<= (streams, startScriptBaseDirectory, startScriptFile in Compile,
+            packageBin in Compile, relativeDependencyClasspathString in Compile,
+            mainClass in Compile, startScriptJavaOpts) map startScriptForGirdJarTask,
+        startScriptForGridJob in Compile <<= (streams, startScriptBaseDirectory, startScriptFile in Compile, startScriptGridFile) map startScriptForGirdJarLauncherTask,
+        startScript in Compile <<= startScriptForGridJob in Compile) ++ genericStartScriptSettings
 
     // settings to be added to a project that doesn't export a jar
     val startScriptForClassesSettings: Seq[Project.Setting[_]] = Seq(
@@ -363,6 +390,43 @@ exec java $JAVA_OPTS -cp "@CLASSPATH@" "$MAINCLASS" "$@"
         writeScript(scriptFile, script)
         streams.log.info("Wrote start script for jar " + relativeJarFile + " to " + scriptFile + " with mainClass := " + maybeMainClass)
         scriptFile
+    }
+
+    // the classpath string here is dependencyClasspath which includes the exported
+    // jar, that is not what I was expecting... anyway it works out since we want
+    // the jar on the classpath.
+    // We put jar on the classpath and supply a mainClass because with "java -jar"
+    // the deps have to be bundled in the jar (classpath is ignored), and SBT does
+    // not normally do that.
+    def startScriptForGirdJarTask(streams: TaskStreams, baseDirectory: File, scriptFile: File, jarFile: File, cpString: RelativeClasspathString, maybeMainClass: Option[String], javaOpts: Seq[String]) = {
+        val template = """#!/bin/bash
+@SCRIPT_ROOT_DETECT@
+
+@MAIN_CLASS_SETUP@
+
+exec java @JAVAOPTS@ -cp "@CLASSPATH@" "$MAINCLASS" "$@"
+
+"""
+        val relativeJarFile = relativizeFile(baseDirectory, jarFile)
+
+        val script = renderTemplate(template, Map("SCRIPT_ROOT_DETECT" -> scriptRootDetect(baseDirectory, scriptFile, Some(relativeJarFile)),
+            "CLASSPATH" -> cpString.value,
+            "MAIN_CLASS_SETUP" -> mainClassSetup(maybeMainClass),
+            "JAVAOPTS" -> javaOpts.mkString(" ")))
+        writeScript(scriptFile, script)
+        streams.log.info("Wrote start script for jar " + relativeJarFile + " to " + scriptFile + " with mainClass := " + maybeMainClass)
+        scriptFile
+    }
+
+    def startScriptForGirdJarLauncherTask(streams: TaskStreams, baseDirectory: File, scriptFile: File, launcherFile: File) = {
+        val template = """#!/bin/bash
+qsub -cwd -mem1024 @STARTSCRIPT@ "$@"
+
+"""
+        val script = renderTemplate(template, Map("STARTSCRIPT" -> scriptFile.name))
+        writeScript(launcherFile, script)
+        streams.log.info("Wrote start script for gridjob for launcher for jar ")
+        launcherFile
     }
 
     // FIXME implement this; it will be a little bit tricky because
